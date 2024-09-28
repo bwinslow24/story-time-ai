@@ -1,37 +1,33 @@
+import base64
 import os
 import re
+import uuid
 
+import replicate
 import streamlit as st
-from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
+from streamlit.components import v1 as components
+
+from langchain_community.chat_models import ChatPerplexity
 from langchain_core.messages import SystemMessage, trim_messages, HumanMessage, AIMessage
-from langchain_core.chat_history import (
-    BaseChatMessageHistory,
-    InMemoryChatMessageHistory,
-)
-from langchain_core.prompts import ChatPromptTemplate
+
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory, StreamlitChatMessageHistory
 
-from langchain_huggingface import HuggingFaceEndpoint
-from langchain_community.chat_models import ChatPerplexity
 from dotenv import load_dotenv
-
-# from transformers import pipeline
-from PIL import Image
-
 from templates import topic_selection_template, title_selection_template, story_builder_template
-from test_prompts import topic_selection_convo
-
-# from transformers import pipeline
+from langchain.chains import LLMChain
+from langchain_community.llms import Replicate
+from langchain_core.prompts import PromptTemplate
 
 # TODO store messages for chat in separate list so i can display specific messages that i want
 # TODO build more robust get tag function to handle response issues
 # TODO if response cant be parsed retry prompt until response can be parsed
 # TODO build handle_response function
+# TODO Add text to speech so we can have the story and options read to us
 
 load_dotenv()
 st.set_page_config(layout="wide")
-st.title("Story Builder")
+st.title("Story Time AI")
 
 # initialize app
 if 'stage' not in st.session_state:
@@ -45,6 +41,10 @@ if 'selected_topics' not in st.session_state:
 
 config = {"configurable": {"session_id": "abc2"}}
 chat = ChatPerplexity(temperature=0.9, model="llama-3.1-8b-instruct")
+# chat = Replicate(
+#     model='meta/meta-llama-3-8b-instruct',
+#     # model_kwargs={"temperature": 0.9}
+# )
 msgs = StreamlitChatMessageHistory(key="langchain_messages")
 
 # Build Chains
@@ -174,17 +174,27 @@ def select_topic(topic):
         # response = generate_response(prompt=title_prompt)
     else:
         prompt = f'{topic}'
-        message_container.chat_message("human").write(prompt)
-        st.session_state['chat_messages'].append(HumanMessage(prompt))
+        message_for_chat = {'text': HumanMessage(prompt)}
+        write_chat_message(container=message_container, message=message_for_chat)
+
+        # message_container.chat_message("human").write(prompt)
+
+        st.session_state['chat_messages'].append(message_for_chat)
 
         # response = generate_response(prompt=topic_prompt)
 
     response = generate_response(prompt=prompt)
     print(f'Response: {response}')
-    message_for_chat = get_ai_message(response=response)
+
+    text_for_chat = get_ai_message(response=response)
+    audio_for_chat = text_to_speech(text_for_chat)
     options = get_options(response=response)
-    message_container.chat_message("ai").write(message_for_chat)
-    st.session_state['chat_messages'].append(AIMessage(message_for_chat))
+
+    message_for_chat = {'text': AIMessage(text_for_chat), 'audio': audio_for_chat}
+    write_chat_message(container=message_container, message=message_for_chat)
+
+    # message_container.chat_message("ai").write(message_for_chat)
+    st.session_state['chat_messages'].append(message_for_chat)
     st.session_state['options'] = options
 
 
@@ -208,7 +218,55 @@ def select_story(story):
     st.session_state['selected_story'].append(story)
 
 
+st.markdown('<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">', unsafe_allow_html=True)
 
+# Custom CSS for the TTS icon
+st.markdown("""
+    <style>
+    .tts-icon {
+        cursor: pointer;
+        margin-left: 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+
+def tts_button(message, key):
+    button_id = f"tts_button_{key}"
+    button_html = f"""
+    <button id="{button_id}" onclick="speak('{message}')">🔊</button>
+    <script>
+    function speak(text) {{
+        const utterance = new SpeechSynthesisUtterance(text);
+        speechSynthesis.speak(utterance);
+    }}
+    </script>
+    """
+    components.html(button_html, height=30)
+
+
+def text_to_speech(text, language="en"):
+    target_voice_path = '/media/rowyourboat.mp3'
+
+    output = replicate.run(
+        "lucataco/xtts-v2:684bc3855b37866c0c65add2ff39c78f3dea3f4ff103a436465326e0f438d55e",
+        input={
+            "text": text,
+            "language": language,
+            "speaker": open(target_voice_path, "rb"),
+            "speed": 1.0  # Adjust speed if needed
+        }
+    )
+    return output
+
+
+def write_chat_message(container, message):
+    with container.chat_message(message['text'].type):
+        st.write(message['text'].content)
+        if message['text'].type == 'ai':
+            if st.button("🔊", key=f"tts_{hash(message['text'].content)}"):
+                st.audio(message['audio'], format='audio/mp3')
 
 
 chat_col, story_col = st.columns(2)
@@ -220,37 +278,38 @@ with chat_col:
             starting_message = 'What should we write about today?'
             response = generate_response(prompt=starting_message)
             message_for_chat = get_ai_message(response=response)
+            audio_for_chat = text_to_speech(text=message_for_chat)
             options = get_options(response=response)
+
             # message_container.chat_message("ai").write(message_for_chat)
-            st.session_state['chat_messages'] = [AIMessage(message_for_chat)]
+            st.session_state['chat_messages'] = [{'text': AIMessage(message_for_chat), 'audio': audio_for_chat}]
             st.session_state['options'] = options
 
         for msg in st.session_state.chat_messages:
-            # for msg in msgs.messages:
-            message_container.chat_message(msg.type).write(msg.content)
+            write_chat_message(container=message_container, message=msg)
 
-            # if msg.type == 'ai':
-            #     # message_container.chat_message(msg.type).write(get_ai_message(msg.content))
-            # else:
-            #     message_container.chat_message(msg.type).write(msg.content)
 
         if prompt := st.chat_input():
             # Add user input to chat messages
-            message_container.chat_message("human").write(prompt)
-            st.session_state['chat_messages'].append(HumanMessage(prompt))
+            user_input_message = {'text': HumanMessage(prompt)}
+            write_chat_message(container=message_container, message=user_input_message)
+
+            st.session_state['chat_messages'].append(user_input_message)
             # generate response for user input
             response = generate_response(prompt=prompt)
             print(f'Response: {response}')
             if st.session_state.stage == 'story':
                 st.session_state['story_content'] = response
-
             else:
                 message_for_chat = get_ai_message(response=response)
+                audio_for_chat = text_to_speech(text=message_for_chat)
                 options = get_options(response=response)
+
                 # update current options
                 st.session_state.options = options
-                message_container.chat_message("ai").write(message_for_chat)
-                st.session_state['chat_messages'].append(AIMessage(message_for_chat))
+
+                ai_chat_message = {'text': AIMessage(message_for_chat), 'audio': audio_for_chat}
+                st.session_state['chat_messages'].append(ai_chat_message)
 
 
 
@@ -274,13 +333,13 @@ with chat_col:
                 # Add a button to the first column if the index is within the range of options
                 if index1 < len(options):
                     with col1:
-                        if st.button(options[index1], on_click=select_option, args=(options[index1],)):
+                        if st.button(options[index1], on_click=select_option, args=(options[index1],), use_container_width=True):
                             pass
 
                 # Add a button to the second column if the index is within the range of options
                 if index2 < len(options):
                     with col2:
-                        if st.button(options[index2], on_click=select_option, args=(options[index2],)):
+                        if st.button(options[index2], on_click=select_option, args=(options[index2],),use_container_width=True):
                             pass
 
 with story_col:
