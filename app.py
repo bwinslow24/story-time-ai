@@ -5,6 +5,8 @@ import uuid
 
 import replicate
 import streamlit as st
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from streamlit.components import v1 as components
 
 from langchain_community.chat_models import ChatPerplexity
@@ -14,11 +16,16 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory, StreamlitChatMessageHistory
 
 from dotenv import load_dotenv
-from templates import topic_selection_template, title_selection_template, story_builder_template
+from transformers import AutoTokenizer
+
+from templates import topic_selection_template, title_selection_template, story_builder_template, ResponseWithOptions, Response
 from langchain.chains import LLMChain
 from langchain_community.llms import Replicate
 from langchain_core.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
 
+import langchain
+langchain.debug = True
 # TODO store messages for chat in separate list so i can display specific messages that i want
 # TODO build more robust get tag function to handle response issues
 # TODO if response cant be parsed retry prompt until response can be parsed
@@ -36,11 +43,37 @@ if 'stage' not in st.session_state:
 if 'selected_topics' not in st.session_state:
     st.session_state['selected_topics'] = []
 
-
-
-
 config = {"configurable": {"session_id": "abc2"}}
-chat = ChatPerplexity(temperature=0.9, model="llama-3.1-8b-instruct")
+
+
+# get llm agent
+# repo_id = 'meta-llama/llama-3.1-8b-instruct'
+# repo_id = 'meta-llama/Llama-3.1-8B-Instruct'
+
+# repo_id = 'meta-llama/Llama-3.2-3B-Instruct'
+# # repo_id = 'google/gemma-7b'
+# # tokenizer = AutoTokenizer.from_pretrained("google/gemma-7b")
+#
+# llm = HuggingFaceEndpoint(
+#     repo_id=repo_id,
+#     # model=repo_id,
+#     # max_new_tokens=512,
+#     temperature=0.9,
+#     # huggingfacehub_api_token=hf_key,
+#     # stop_sequences=["\n\n", "END"]
+#     # model_kwargs={"tokenizer": tokenizer}
+#     # model_kwargs={
+#     #     # "max_new_tokens": 256,
+#     #     "temperature": 0.9,
+#     #     "top_p": 0.95,
+#     # }
+#
+# )
+
+# chat = ChatHuggingFace(llm=llm)
+chat = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.5)
+
+# chat = ChatPerplexity(temperature=0.9, model="llama-3.1-8b-instruct")
 # chat = Replicate(
 #     model='meta/meta-llama-3-8b-instruct',
 #     # model_kwargs={"temperature": 0.9}
@@ -49,8 +82,12 @@ msgs = StreamlitChatMessageHistory(key="langchain_messages")
 
 # Build Chains
 topic_selection_chain = topic_selection_template | chat
+
 title_selection_chain = title_selection_template | chat
 story_builder_chain = story_builder_template | chat
+parser_with_options = PydanticOutputParser(pydantic_object=ResponseWithOptions)
+parser_with_out_options = PydanticOutputParser(pydantic_object=Response)
+
 
 topic_selection_cwh = RunnableWithMessageHistory(
     topic_selection_chain,
@@ -74,8 +111,7 @@ story_builder_cwh = RunnableWithMessageHistory(
 )
 
 chain_map = {'topic': topic_selection_cwh, 'title': title_selection_cwh, 'story': story_builder_cwh}
-
-
+parser_map = {'topic': parser_with_options, 'title': parser_with_options, 'story': parser_with_options}
 
 def get_chain():
     return chain_map[st.session_state.stage]
@@ -85,7 +121,7 @@ def get_chain():
 # Once 5 topics are selected select title based on selected topics
 # Once title is selected build story. based on title and selected topics
 
-def generate_response(prompt):
+def generate_response(prompt) -> ResponseWithOptions:
     # convo = topic_selection_convo[0]
     # msgs.add_user_message(convo['prompt'])
     # msgs.add_ai_message(convo['response'])
@@ -93,15 +129,17 @@ def generate_response(prompt):
     # return convo['response']
 
     stage = st.session_state.stage
-
+    response = 'Whoops something went wrong...'
     if stage == 'topic':
-        return generate_topic_response(prompt=prompt)
+        response = generate_topic_response(prompt=prompt)
     elif stage == 'title':
-        return generate_title_response(prompt=prompt)
+        response = generate_title_response(prompt=prompt)
     elif stage == 'story':
-        return generate_story_response(prompt=prompt)
-
-    return 'Whoops something went wrong...'
+        response = generate_story_response(prompt=prompt)
+    print(response)
+    parser = parser_map[stage]
+    parsed_output = parser.parse(response)
+    return parsed_output
 
 
 def generate_topic_response(prompt):
@@ -112,7 +150,6 @@ def generate_topic_response(prompt):
     ).content
 
 
-
 def generate_title_response(prompt):
     chain = get_chain()
     topics = ', '.join(st.session_state['selected_topics'])
@@ -121,7 +158,6 @@ def generate_title_response(prompt):
         {'text': prompt, 'topics': topics},
         config=config
     ).content
-
 
 
 def generate_story_response(prompt):
@@ -186,11 +222,14 @@ def select_topic(topic):
     response = generate_response(prompt=prompt)
     print(f'Response: {response}')
 
-    text_for_chat = get_ai_message(response=response)
-    audio_for_chat = text_to_speech(text_for_chat)
-    options = get_options(response=response)
+    text_for_chat = response.message
+    options = response.options
 
-    message_for_chat = {'text': AIMessage(text_for_chat), 'audio': audio_for_chat}
+    # text_for_chat = get_ai_message(response=response)
+    # audio_for_chat = text_to_speech(text_for_chat)
+    # options = get_options(response=response)
+
+    message_for_chat = {'text': AIMessage(text_for_chat)}
     write_chat_message(container=message_container, message=message_for_chat)
 
     # message_container.chat_message("ai").write(message_for_chat)
@@ -206,7 +245,7 @@ def select_title(title):
     response = generate_response(prompt=prompt)
     print(f'Response: {response}')
     # story_content = get_ai_message(response=response)
-    st.session_state['story_content'] = response
+    st.session_state['story_content'] = response.message
 
     # options = get_options(response=response)
     # message_container.chat_message("ai").write(message_for_chat)
@@ -264,9 +303,9 @@ def text_to_speech(text, language="en"):
 def write_chat_message(container, message):
     with container.chat_message(message['text'].type):
         st.write(message['text'].content)
-        if message['text'].type == 'ai':
-            if st.button("🔊", key=f"tts_{hash(message['text'].content)}"):
-                st.audio(message['audio'], format='audio/mp3')
+        # if message['text'].type == 'ai':
+        #     if st.button("🔊", key=f"tts_{hash(message['text'].content)}"):
+        #         st.audio(message['audio'], format='audio/mp3')
 
 
 chat_col, story_col = st.columns(2)
@@ -277,12 +316,20 @@ with chat_col:
         if 'chat_messages' not in st.session_state:
             starting_message = 'What should we write about today?'
             response = generate_response(prompt=starting_message)
-            message_for_chat = get_ai_message(response=response)
-            audio_for_chat = text_to_speech(text=message_for_chat)
-            options = get_options(response=response)
+            message_for_chat = response.message
+            options = response.options
+
+            # message_for_chat = get_ai_message(response=response)
+            # # audio_for_chat = text_to_speech(text=message_for_chat)
+            # options = get_options(response=response)
 
             # message_container.chat_message("ai").write(message_for_chat)
-            st.session_state['chat_messages'] = [{'text': AIMessage(message_for_chat), 'audio': audio_for_chat}]
+            st.session_state['chat_messages'] = [
+                {
+                    'text': AIMessage(message_for_chat),
+                 # 'audio': audio_for_chat
+                 }
+            ]
             st.session_state['options'] = options
 
         for msg in st.session_state.chat_messages:
@@ -299,16 +346,20 @@ with chat_col:
             response = generate_response(prompt=prompt)
             print(f'Response: {response}')
             if st.session_state.stage == 'story':
-                st.session_state['story_content'] = response
+                st.session_state['story_content'] = response.message
             else:
-                message_for_chat = get_ai_message(response=response)
-                audio_for_chat = text_to_speech(text=message_for_chat)
-                options = get_options(response=response)
+                # message_for_chat = get_ai_message(response=response)
+                # audio_for_chat = text_to_speech(text=message_for_chat)
+                # options = get_options(response=response)
+
+                message_for_chat = response.message
+                # audio_for_chat = text_to_speech(text=message_for_chat)
+                options = response.options
 
                 # update current options
                 st.session_state.options = options
 
-                ai_chat_message = {'text': AIMessage(message_for_chat), 'audio': audio_for_chat}
+                ai_chat_message = {'text': AIMessage(message_for_chat)}
                 st.session_state['chat_messages'].append(ai_chat_message)
 
 
