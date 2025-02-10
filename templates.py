@@ -7,22 +7,12 @@ from pydantic import BaseModel, Field
 
 # Pydantic
 class ResponseWithOptions(BaseModel):
-    """Joke to tell user."""
-
     message: str = Field(description="This is the message to the user that will be displayed in the chat")
     options: list[str] = Field(description="This is the list of options for the user to select")
-    # rating: Optional[int] = Field(
-    #     default=None, description="How funny the joke is, from 1 to 10"
-    # )
+
 
 class Response(BaseModel):
-    """Joke to tell user."""
-
     message: str = Field(description="This is the message to the user that will be displayed in the chat")
-    # options: list[str] = Field(description="This is the list of options for the user to select")
-    # rating: Optional[int] = Field(
-    #     default=None, description="How funny the joke is, from 1 to 10"
-    # )
 
 
 topic_selection_template = ChatPromptTemplate.from_messages(

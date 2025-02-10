@@ -2,4 +2,4 @@
 streamlit run app.py
 
 ### Configuration
-- PPLX_API_KEY:  Perplexity API KEY
+- GOOGLE_API_KEY:  Google Gemini API KEY
